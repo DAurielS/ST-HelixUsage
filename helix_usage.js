@@ -52,8 +52,6 @@ async function fetchHelixUsageData_mock(apiKey) {
     }
     
     // Ensure we don't have more messages than current_usage_count (though loop above should handle it)
-    // More accurately, the number of messages should BE the current_usage_count if they represent individual uses.
-    // For this mock, let's ensure the count matches the messages array length.
     const final_current_usage_count = messages.length;
 
 
