@@ -1,7 +1,12 @@
 // SillyTavern Helix Usage Monitor Extension
 
+import { eventSource, event_types } from "../../../../script.js";
+
 // Get the SillyTavern context
 const context = SillyTavern.getContext();
+
+// Variable to store if Helix configuration is active
+let isHelixConfigActive = false;
 
 // Log to confirm the extension is loaded
 console.log("Helix Usage Monitor extension loaded.");
@@ -22,6 +27,55 @@ function createUsageDisplayUI() {
     container.appendChild(nextMessageTimeP);
 
     return container;
+}
+
+// Function to check conditions and update Helix UI visibility and API key
+function checkAndUpdateHelixUI() {
+    // Log the entire context and context.settings to check their availability and structure
+    console.log('Helix Monitor Debug: SillyTavern.getContext() result:', context);
+    console.log('Helix Monitor Debug: context.settings object:', context?.settings); // Keep for one more check if needed
+    console.log('Helix Monitor Debug: context.chatCompletionSettings object:', context?.chatCompletionSettings);
+
+    const uiContainer = document.getElementById('helix-usage-container');
+    if (!uiContainer) {
+        console.warn("Helix Usage Monitor: UI container not found in checkAndUpdateHelixUI.");
+        return;
+    }
+
+
+    const currentSettings = context.chatCompletionSettings; // *** Changed from context.settings ***
+    let isActive = false;
+    const helixUrlPattern = 'https://helixmind.online';
+
+    // Log the relevant settings from context for debugging
+    // Log the relevant settings from context.chatCompletionSettings for debugging
+    console.log('Helix Monitor Debug (using chatCompletionSettings): chat_completion_source =', currentSettings?.chat_completion_source,
+                '| custom_url =', currentSettings?.custom_url,
+                '| api_server =', currentSettings?.api_server); // api_server might be elsewhere or not in chatCompletionSettings
+
+    // Primary Check: If 'Custom' provider is selected
+    if (currentSettings?.chat_completion_source === 'custom') {
+        const customUrl = currentSettings?.custom_url ?? '';
+        if (customUrl.startsWith(helixUrlPattern)) {
+            isActive = true;
+        }
+    }
+    // Secondary Check: If a generic 'api_server' is pointing to Helix
+    else if (currentSettings?.api_server?.startsWith(helixUrlPattern)) {
+        isActive = true;
+    }
+
+    isHelixConfigActive = isActive; // Update the global state
+
+    if (isHelixConfigActive) {
+        uiContainer.classList.add('helix-active');
+        // uiContainer.style.display = ''; // Old method
+        console.log('Helix Monitor: Detected active Helix endpoint. API key is expected to be configured and will be handled by SillyTavern for requests.');
+    } else {
+        uiContainer.classList.remove('helix-active');
+        // uiContainer.style.display = 'none'; // Old method
+        console.log('Helix Monitor: Helix endpoint not detected as active based on current settings.');
+    }
 }
 
 // Function to initialize and inject the UI
@@ -87,6 +141,11 @@ function initHelixUsageUI() {
         console.warn("Could not find a suitable parent element in the left navbar for Helix Usage Monitor UI. Appending to body as a last resort.");
         document.body.appendChild(usageUI);
     }
+
+    if (injectionSuccessful) {
+        // Call once after successful UI injection to set initial state
+        checkAndUpdateHelixUI();
+    }
 }
 
 // Initialize the UI when the script loads
@@ -98,3 +157,9 @@ if (document.readyState === 'loading') {
     // DOMContentLoaded has already fired
     initHelixUsageUI();
 }
+
+// Listen for settings updates to re-evaluate conditions
+eventSource.on(event_types.SETTINGS_UPDATED, () => {
+    console.log("Helix Usage Monitor: SETTINGS_UPDATED event received.");
+    checkAndUpdateHelixUI();
+});

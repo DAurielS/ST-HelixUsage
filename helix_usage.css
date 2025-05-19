@@ -4,6 +4,11 @@
     margin: 10px 0;    /* Consistent vertical margins */
     border-top: 1px solid var(--border-color, #303030); /* Separator line above */
     border-bottom: 1px solid var(--border-color, #303030); /* Separator line below */
+    display: none; /* Hidden by default */
+}
+
+#helix-usage-container.helix-active {
+    display: block; /* Or flex, or initial, depending on desired layout. Block is simple. */
 }
 
 #helix-usage-container p {
