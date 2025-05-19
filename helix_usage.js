@@ -7,9 +7,160 @@ const context = SillyTavern.getContext();
 
 // Variable to store if Helix configuration is active
 let isHelixConfigActive = false;
+let usageCountdownInterval = null;
+let nextMessageExpiryTimeMs = null;
+// const helixApiKey = ''; // Not strictly needed for mock, but good to remember for real API
 
 // Log to confirm the extension is loaded
 console.log("Helix Usage Monitor extension loaded.");
+
+// --- Helper Functions ---
+function formatMillisecondsToTime(ms) {
+    if (ms < 0) ms = 0;
+    let totalSeconds = Math.floor(ms / 1000);
+    let hours = Math.floor(totalSeconds / 3600);
+    let minutes = Math.floor((totalSeconds % 3600) / 60);
+    let seconds = totalSeconds % 60;
+
+    const pad = (num) => String(num).padStart(2, '0');
+
+    if (hours > 0) {
+        return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+    } else {
+        return `${pad(minutes)}:${pad(seconds)}`;
+    }
+}
+
+// --- Mock API Function ---
+async function fetchHelixUsageData_mock(apiKey) {
+    console.log(`Fetching mock Helix usage data (API Key: ${apiKey ? 'provided' : 'not provided'})...`);
+    await new Promise(resolve => setTimeout(resolve, 500)); // Simulate network delay
+
+    const total_limit = 50;
+    // Simulate some usage, ensuring it's less than total_limit
+    const current_usage_count = Math.floor(Math.random() * (total_limit - 5)) + 5; // e.g. 5 to 49
+
+    let messages = [];
+    if (current_usage_count > 0) {
+        for (let i = 0; i < current_usage_count; i++) {
+            // Generate timestamps spread out over the last 20 hours for variety
+            const randomMinutesAgo = Math.floor(Math.random() * 20 * 60); // Up to 20 hours ago
+            messages.push({ timestamp: new Date(Date.now() - randomMinutesAgo * 60 * 1000).toISOString() });
+        }
+        // Sort messages by timestamp, oldest first
+        messages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    }
+    
+    // Ensure we don't have more messages than current_usage_count (though loop above should handle it)
+    // More accurately, the number of messages should BE the current_usage_count if they represent individual uses.
+    // For this mock, let's ensure the count matches the messages array length.
+    const final_current_usage_count = messages.length;
+
+
+    const mockResponse = {
+        total_limit: total_limit,
+        current_usage_count: final_current_usage_count,
+        messages: messages
+    };
+    // console.log("Mock data generated:", JSON.parse(JSON.stringify(mockResponse))); // Log a deep copy
+    return mockResponse;
+}
+
+// --- Timer Logic ---
+function startUsageCountdown(expiryTimeMs) {
+    clearInterval(usageCountdownInterval);
+    nextMessageExpiryTimeMs = expiryTimeMs;
+
+    const nextMessageTimeText = document.getElementById('helix-next-message-time-text');
+    if (!nextMessageTimeText) {
+        console.warn("Helix Monitor: Next message time text element not found in startUsageCountdown.");
+        return;
+    }
+
+    const updateTimerDisplay = () => {
+        const remainingMs = nextMessageExpiryTimeMs - Date.now();
+        if (remainingMs <= 0) {
+            clearInterval(usageCountdownInterval);
+            if (nextMessageTimeText) nextMessageTimeText.textContent = 'Next Message In: Refreshing...';
+            console.log("Helix Monitor: Countdown expired, refreshing usage data.");
+            refreshUsageData(); // Trigger refresh
+        } else {
+            if (nextMessageTimeText) nextMessageTimeText.textContent = `Next Message In: ${formatMillisecondsToTime(remainingMs)}`;
+        }
+    };
+
+    updateTimerDisplay(); // Initial display update
+    usageCountdownInterval = setInterval(updateTimerDisplay, 1000);
+    // console.log(`Helix Monitor: Countdown started. Target expiry: ${new Date(expiryTimeMs).toISOString()}`);
+}
+
+
+// --- Main Data Refresh and UI Update Logic ---
+async function refreshUsageData() {
+    const messagesUsedText = document.getElementById('helix-messages-used-text');
+    const nextMessageTimeText = document.getElementById('helix-next-message-time-text');
+
+    // This function assumes isHelixConfigActive is true because it's called
+    // by checkAndUpdateHelixUI (on activation), generation event listeners (which check),
+    // or timer expiry (which implies it was active).
+    if (!isHelixConfigActive) {
+        console.warn("Helix Monitor: refreshUsageData called while not active. This is unexpected. Aborting.");
+        return;
+    }
+
+    console.log('Helix Monitor: Refreshing Helix usage data...');
+    // Set loading states immediately
+    if (messagesUsedText) messagesUsedText.textContent = 'Messages Used: Loading...';
+    if (nextMessageTimeText) nextMessageTimeText.textContent = 'Next Message In: Loading...';
+
+
+    // Simulate getting API key from settings
+    const currentApiKey = context.chatCompletionSettings?.api_key_custom || 'dummy_api_key';
+    console.log('Helix Monitor: API key used for mock:', currentApiKey);
+
+    try {
+        const data = await fetchHelixUsageData_mock(currentApiKey);
+
+        if (messagesUsedText) {
+            messagesUsedText.textContent = `Messages Used: ${data.current_usage_count} / ${data.total_limit}`;
+        }
+
+        if (nextMessageTimeText) {
+            if (data.current_usage_count === 0) {
+                nextMessageTimeText.textContent = 'Next Message In: Ready';
+                clearInterval(usageCountdownInterval);
+            } else if (data.messages && data.messages.length > 0) {
+                // Messages are already sorted by the mock function (oldest first)
+                const oldestMessageTimestamp = new Date(data.messages[0].timestamp).getTime();
+                const expiryTimeMs = oldestMessageTimestamp + (24 * 60 * 60 * 1000);
+                
+                if (expiryTimeMs <= Date.now()) {
+                    nextMessageTimeText.textContent = 'Next Message In: Refreshing...';
+                    clearInterval(usageCountdownInterval);
+                    console.log("Helix Monitor: Oldest message already expired, triggering immediate refresh.");
+                    // Add a small delay to prevent potential rapid loop if mock always returns expired
+                    setTimeout(refreshUsageData, 500);
+                } else {
+                    startUsageCountdown(expiryTimeMs);
+                }
+            } else if (data.current_usage_count > 0 && (!data.messages || data.messages.length === 0)) {
+                nextMessageTimeText.textContent = 'Next Message In: Unknown (No msgs)';
+                clearInterval(usageCountdownInterval);
+                console.warn("Helix Monitor: Usage count > 0 but no messages array. Timer not started.");
+            } else { // current_usage_count < total_limit and no specific message expiring soon (or other unhandled cases)
+                nextMessageTimeText.textContent = 'Next Message In: Ready';
+                clearInterval(usageCountdownInterval);
+            }
+        }
+        // console.log('Helix Monitor: UI updated with new data.');
+
+    } catch (error) {
+        console.error('Helix Monitor: Error fetching or processing Helix usage data:', error);
+        if (messagesUsedText) messagesUsedText.textContent = 'Messages Used: Error';
+        if (nextMessageTimeText) nextMessageTimeText.textContent = 'Next Message In: Error';
+        clearInterval(usageCountdownInterval); // Stop timer on error
+    }
+}
 
 // Function to create the Helix Usage Display UI
 function createUsageDisplayUI() {
@@ -31,51 +182,46 @@ function createUsageDisplayUI() {
 
 // Function to check conditions and update Helix UI visibility and API key
 function checkAndUpdateHelixUI() {
-    // Log the entire context and context.settings to check their availability and structure
-    console.log('Helix Monitor Debug: SillyTavern.getContext() result:', context);
-    console.log('Helix Monitor Debug: context.settings object:', context?.settings); // Keep for one more check if needed
-    console.log('Helix Monitor Debug: context.chatCompletionSettings object:', context?.chatCompletionSettings);
-
     const uiContainer = document.getElementById('helix-usage-container');
+    const messagesUsedText = document.getElementById('helix-messages-used-text');
+    const nextMessageTimeText = document.getElementById('helix-next-message-time-text');
+
     if (!uiContainer) {
-        console.warn("Helix Usage Monitor: UI container not found in checkAndUpdateHelixUI.");
+        console.warn("Helix Monitor: UI container not found in checkAndUpdateHelixUI.");
         return;
     }
 
-
-    const currentSettings = context.chatCompletionSettings; // *** Changed from context.settings ***
-    let isActive = false;
+    const currentSettings = context.chatCompletionSettings;
+    let newActiveState = false;
     const helixUrlPattern = 'https://helixmind.online';
 
-    // Log the relevant settings from context for debugging
-    // Log the relevant settings from context.chatCompletionSettings for debugging
-    console.log('Helix Monitor Debug (using chatCompletionSettings): chat_completion_source =', currentSettings?.chat_completion_source,
-                '| custom_url =', currentSettings?.custom_url,
-                '| api_server =', currentSettings?.api_server); // api_server might be elsewhere or not in chatCompletionSettings
-
-    // Primary Check: If 'Custom' provider is selected
     if (currentSettings?.chat_completion_source === 'custom') {
         const customUrl = currentSettings?.custom_url ?? '';
         if (customUrl.startsWith(helixUrlPattern)) {
-            isActive = true;
+            newActiveState = true;
         }
     }
-    // Secondary Check: If a generic 'api_server' is pointing to Helix
-    else if (currentSettings?.api_server?.startsWith(helixUrlPattern)) {
-        isActive = true;
-    }
 
-    isHelixConfigActive = isActive; // Update the global state
+    if (isHelixConfigActive !== newActiveState) {
+        console.log(`Helix Monitor: Active state changing from ${isHelixConfigActive} to ${newActiveState}.`);
+        isHelixConfigActive = newActiveState; // Update the global state
 
-    if (isHelixConfigActive) {
-        uiContainer.classList.add('helix-active');
-        // uiContainer.style.display = ''; // Old method
-        console.log('Helix Monitor: Detected active Helix endpoint. API key is expected to be configured and will be handled by SillyTavern for requests.');
-    } else {
-        uiContainer.classList.remove('helix-active');
-        // uiContainer.style.display = 'none'; // Old method
-        console.log('Helix Monitor: Helix endpoint not detected as active based on current settings.');
+        if (isHelixConfigActive) {
+            uiContainer.classList.add('helix-active');
+            console.log('Helix Monitor: Became active. Triggering initial data refresh.');
+            refreshUsageData(); // Refresh data now that it's active
+        } else {
+            uiContainer.classList.remove('helix-active');
+            clearInterval(usageCountdownInterval); // Stop timer
+            if (messagesUsedText) messagesUsedText.textContent = 'Messages Used: N/A';
+            if (nextMessageTimeText) nextMessageTimeText.textContent = 'Next Message In: N/A';
+            console.log('Helix Monitor: Became inactive. UI reset and timer cleared.');
+        }
     }
+    // If state hasn't changed, do nothing here. Refreshes are triggered by:
+    // 1. Becoming active (above).
+    // 2. Generation end/stopped events.
+    // 3. Timer expiry.
 }
 
 // Function to initialize and inject the UI
@@ -149,8 +295,6 @@ function initHelixUsageUI() {
 }
 
 // Initialize the UI when the script loads
-// Ensuring the DOM is likely ready for manipulation.
-// SillyTavern extensions often run after initial DOM load.
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initHelixUsageUI);
 } else {
@@ -162,4 +306,13 @@ if (document.readyState === 'loading') {
 eventSource.on(event_types.SETTINGS_UPDATED, () => {
     console.log("Helix Usage Monitor: SETTINGS_UPDATED event received.");
     checkAndUpdateHelixUI();
+});
+
+// Listen for generation ended event to trigger refresh
+eventSource.on(event_types.GENERATION_ENDED, (data) => {
+    console.log("Helix Usage Monitor: GENERATION_ENDED event received.");
+    if (isHelixConfigActive) {
+        console.log("Helix Monitor: Active, refreshing data after generation ended.");
+        refreshUsageData();
+    }
 });
