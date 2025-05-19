@@ -33,50 +33,59 @@ function initHelixUsageUI() {
     }
 
     const usageUI = createUsageDisplayUI();
+    let injectionSuccessful = false;
 
-    // Attempt to find a suitable parent in the left navbar
-    // Primary target is 'left-nav-panel' based on index.html analysis.
-    let parentElement = document.getElementById('left-nav-panel');
+    // Injection logic: Target the "Streaming" toggle in the left navbar.
+    // The goal is to insert the Helix Usage UI before the "Streaming" toggle.
+    const streamToggleInput = document.getElementById('stream_toggle');
+    let streamingToggleDiv = null;
 
-    if (parentElement) {
-        // Check if the scrollable inner div exists, common in ST panels
-        const scrollableInner = parentElement.querySelector('.scrollableInner');
-        if (scrollableInner) {
-            scrollableInner.appendChild(usageUI);
-            console.log("Helix Usage Monitor UI appended to '.scrollableInner' within '#left-nav-panel'.");
-        } else {
-            parentElement.appendChild(usageUI);
-            console.log("Helix Usage Monitor UI appended to '#left-nav-panel'.");
+    if (streamToggleInput) {
+        // Find the closest ancestor div with class 'range-block'
+        streamingToggleDiv = streamToggleInput.closest('div.range-block');
+    }
+
+    if (streamingToggleDiv && streamingToggleDiv.parentElement) {
+        // The parentElement should be div#range_block_openai or a similar container
+        try {
+            streamingToggleDiv.parentElement.insertBefore(usageUI, streamingToggleDiv);
+            console.log("Helix Usage Monitor UI injected before the 'Streaming' toggle's div.range-block.");
+            injectionSuccessful = true;
+        } catch (e) {
+            console.error("Error injecting Helix Usage Monitor UI before 'Streaming' toggle's div.range-block:", e);
         }
     } else {
-        // Fallback if '#left-nav-panel' is not found
-        console.warn("'#left-nav-panel' not found. Attempting fallback selectors.");
-        parentElement = document.getElementById('extensions_settings') || document.getElementById('extensions_settings2');
-        if (parentElement) {
-            // If #extensions_settings or #extensions_settings2 is found, append to its parent
-            if (parentElement.parentElement) {
-                parentElement.parentElement.appendChild(usageUI);
-                console.log("Helix Usage Monitor UI appended to parent of #extensions_settings or #extensions_settings2.");
-            } else {
-                parentElement.insertAdjacentElement('afterend', usageUI);
-                console.log("Helix Usage Monitor UI inserted after #extensions_settings or #extensions_settings2.");
-            }
-        } else {
-            parentElement = document.querySelector('#rm_api_block') || // Another settings panel
-                            document.querySelector('#AdvancedFormatting') || // Another settings panel
-                            document.querySelector('#WorldInfo') || // World Info panel
-                            document.querySelector('#user-settings-block') || // User settings panel
-                            document.querySelector('.list-group.menu_list.sortableflex'); // General menu list
+        console.warn("Could not find the 'Streaming' toggle (input#stream_toggle) or its 'div.range-block' container. Attempting fallback injection.");
+    }
 
-            if (parentElement) {
-                parentElement.appendChild(usageUI);
-                console.log("Helix Usage Monitor UI appended to a fallback panel.");
+    // Fallback: If specific injection fails, append to a known general area in the left navbar.
+    if (!injectionSuccessful) {
+        const leftNavPanel = document.getElementById('left-nav-panel');
+        if (leftNavPanel) {
+            const scrollableInner = leftNavPanel.querySelector('.scrollableInner .panels'); // More specific target
+            if (scrollableInner) {
+                scrollableInner.appendChild(usageUI);
+                console.log("Helix Usage Monitor UI appended to '.scrollableInner .panels' in '#left-nav-panel' (fallback).");
+                injectionSuccessful = true;
             } else {
-                // Last resort: append to body.
-                console.warn("Could not find a suitable parent element for Helix Usage Monitor UI. Appending to body as a last resort.");
-                document.body.appendChild(usageUI);
+                const genericScrollable = leftNavPanel.querySelector('.scrollableInner');
+                if (genericScrollable) {
+                    genericScrollable.appendChild(usageUI);
+                     console.log("Helix Usage Monitor UI appended to '.scrollableInner' in '#left-nav-panel' (fallback).");
+                     injectionSuccessful = true;
+                } else {
+                    leftNavPanel.appendChild(usageUI);
+                    console.log("Helix Usage Monitor UI appended to '#left-nav-panel' (fallback).");
+                    injectionSuccessful = true;
+                }
             }
         }
+    }
+
+    if (!injectionSuccessful) {
+        // Last resort: append to body if no suitable panel found.
+        console.warn("Could not find a suitable parent element in the left navbar for Helix Usage Monitor UI. Appending to body as a last resort.");
+        document.body.appendChild(usageUI);
     }
 }
 
