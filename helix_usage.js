@@ -1,6 +1,7 @@
 // SillyTavern Helix Usage Monitor Extension
 
-import { eventSource, event_types } from "../../../../script.js";
+import { eventSource, event_types, callPopup } from "../../../../script.js"; // Added callPopup
+import { findSecret, SECRET_KEYS } from "../../../secrets.js"; // Added imports for secrets
 
 // Get the SillyTavern context
 const context = SillyTavern.getContext();
@@ -9,7 +10,6 @@ const context = SillyTavern.getContext();
 let isHelixConfigActive = false;
 let usageCountdownInterval = null;
 let nextMessageExpiryTimeMs = null;
-// const helixApiKey = ''; // Not strictly needed for mock, but good to remember for real API
 
 // Log to confirm the extension is loaded
 console.log("Helix Usage Monitor extension loaded.");
@@ -113,13 +113,28 @@ async function refreshUsageData() {
     if (messagesUsedText) messagesUsedText.textContent = 'Messages Used: Loading...';
     if (nextMessageTimeText) nextMessageTimeText.textContent = 'Next Message In: Loading...';
 
-
-    // Simulate getting API key from settings
-    const currentApiKey = context.chatCompletionSettings?.api_key_custom || 'dummy_api_key';
-    console.log('Helix Monitor: API key used for mock:', currentApiKey);
+    let helixApiKey = null;
+    try {
+        helixApiKey = await findSecret(SECRET_KEYS.CUSTOM);
+        if (!helixApiKey || typeof helixApiKey !== 'string' || helixApiKey.trim() === '') {
+            console.error('Helix Monitor: Failed to retrieve a valid API key for CUSTOM endpoint. It might be missing, or "allowKeysExposure" is false in config.yaml.');
+            if (messagesUsedText) messagesUsedText.textContent = 'Messages Used: Key Error';
+            if (nextMessageTimeText) nextMessageTimeText.textContent = 'Next Message In: Key Error';
+            // Display a popup to the user
+            toastr.info('<h3>Helix Usage Monitor Error</h3><p>Could not retrieve the API key for the custom Helix endpoint. Please ensure your API key is correctly configured in SillyTavern for the "Custom" provider and that <code>allowKeysExposure</code> is set to <code>true</code> in your <code>config.yaml</code> file (requires server restart after changing).</p>', 'text');
+            return; // Stop further processing
+        }
+        console.log('Helix Monitor: API key retrieved successfully via findSecret.');
+    } catch (err) {
+        console.error('Helix Monitor: Error calling findSecret:', err);
+        if (messagesUsedText) messagesUsedText.textContent = 'Messages Used: Key Error';
+        if (nextMessageTimeText) nextMessageTimeText.textContent = 'Next Message In: Key Error';
+        toastr.info('<h3>Helix Usage Monitor Error</h3><p>An error occurred while trying to retrieve the API key. Check the browser console for details.</p>', 'text');
+        return; // Stop further processing
+    }
 
     try {
-        const data = await fetchHelixUsageData_mock(currentApiKey);
+        const data = await fetchHelixUsageData_mock(helixApiKey);
 
         if (messagesUsedText) {
             messagesUsedText.textContent = `Messages Used: ${data.current_usage_count} / ${data.total_limit}`;
