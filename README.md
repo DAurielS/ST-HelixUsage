@@ -1,7 +1,6 @@
 # Helix Usage Monitor
 
 **Author:** MonGauss
-**Version:** 1.0
 
 A SillyTavern extension that displays API usage information for `https://helixmind.online` API users, helping them track their message consumption and upcoming reset times.
 
