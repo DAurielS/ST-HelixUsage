@@ -1,4 +1,5 @@
-// SillyTavern Helix Usage Monitor Extension
+// Main extension code
+// This extension monitors HelixMind API usage and displays it in the UI.
 
 import { saveSettingsDebounced, eventSource, event_types} from "../../../../script.js"; // Added saveSettingsDebounced
 import { findSecret, SECRET_KEYS } from "../../../secrets.js";
@@ -43,7 +44,6 @@ function loadHelixSettings() {
         console.warn("Helix Monitor: #helix-usage-hourly-toggle not found during loadHelixSettings.");
     }
     // Call updateHourlyBreakdownUI here to ensure its state is correct after settings load / init
-    // This assumes hourlyBreakdownData might have been populated by an initial refreshUsageData if active
     updateHourlyBreakdownUI(hourlyBreakdownData);
 }
 
@@ -76,36 +76,6 @@ function formatHourForDisplay(hour24) {
     let hour12 = hour24 % 12;
     if (hour12 === 0) hour12 = 12; // 0 should be 12 AM, 12 should be 12 PM
     return `${hour12} ${ampm}`;
-}
-
-// --- Mock API Function ---
-async function fetchHelixUsageData_mock(apiKey) {
-    console.log(`Fetching mock Helix usage data (API Key: ${apiKey ? 'provided' : 'not provided'})...`);
-    await new Promise(resolve => setTimeout(resolve, 500)); // Simulate network delay
-
-    const total_limit = 50;
-    // Simulate some usage, ensuring it's less than total_limit
-    const current_usage_count = Math.floor(Math.random() * (total_limit - 5)) + 5; // e.g. 5 to 49
-
-    let messages = [];
-    if (current_usage_count > 0) {
-        for (let i = 0; i < current_usage_count; i++) {
-            // Generate timestamps spread out over the last 20 hours for variety
-            const randomMinutesAgo = Math.floor(Math.random() * 20 * 60); // Up to 20 hours ago
-            messages.push({ timestamp: new Date(Date.now() - randomMinutesAgo * 60 * 1000).toISOString() });
-        }
-        // Sort messages by timestamp, oldest first
-        messages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-    }
-    
-    const final_current_usage_count = messages.length;
-
-    const mockResponse = {
-        total_limit: total_limit,
-        current_usage_count: final_current_usage_count,
-        messages: messages
-    };
-    return mockResponse;
 }
 
 // --- Real API Function ---
@@ -322,13 +292,13 @@ async function refreshUsageData() {
                 
                 console.log(`Helix Monitor: Oldest msg ts (ms): ${oldestMessageTimestampMs}, Calculated expiry (ms): ${calculatedExpiryTimeMs}, Now (ms): ${Date.now()}`);
 
+                // Fallback for weird cases where the filter somehow fails to remove a message older than 24h
                 if (calculatedExpiryTimeMs <= Date.now()) {
                     // Oldest message is already expired according to calculation
                     nextMessageTimeText.textContent = 'Next Message In: Slot Open!'; // Or "Ready"
                     clearInterval(usageCountdownInterval);
                     nextMessageExpiryTimeMs = null; // Clear stored expiry time
                     console.log("Helix Monitor: Oldest message already expired. UI updated, timer cleared. No immediate auto-refresh from this path.");
-                    // Removed: setTimeout(refreshUsageData, 1500); // This was causing the loop
                 } else {
                     // Oldest message has a future expiry time
                     startUsageCountdown(calculatedExpiryTimeMs);
@@ -337,12 +307,10 @@ async function refreshUsageData() {
         }
 
         // --- Hourly Breakdown Logic ---
-        // Ensure extension_settings and extensionName are accessible, or pass settings object if needed
-        // Assuming extension_settings and extensionName are globally accessible in this scope as per existing patterns
         if (extension_settings && extension_settings[extensionName] && extension_settings[extensionName].showHourlyBreakdown) {
             if (data && data.messages && data.messages.length > 0) {
                 hourlyBreakdownData = calculateHourlyBreakdown(data.messages); // data.messages is activeMessages
-                // console.log("Helix Monitor: Hourly Breakdown Data:", JSON.stringify(hourlyBreakdownData, null, 2)); // Keep for debugging if needed
+                // console.log("Helix Monitor: Hourly Breakdown Data:", JSON.stringify(hourlyBreakdownData, null, 2));
             } else {
                 hourlyBreakdownData = null; // No active messages, clear breakdown
                 // console.log("Helix Monitor: Hourly Breakdown - No active messages to process.");
