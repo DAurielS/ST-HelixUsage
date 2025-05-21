@@ -64,6 +64,67 @@ async function fetchHelixUsageData_mock(apiKey) {
     return mockResponse;
 }
 
+// --- Real API Function ---
+async function fetchHelixUsageData_real(apiKey) {
+    const apiUrl = 'https://helixmind.online/v1/usage';
+    console.log(`Helix Monitor: Fetching REAL Helix usage data from ${apiUrl}...`);
+
+    try {
+        const response = await fetch(apiUrl, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`
+                // 'Content-Type': 'application/json' // Not strictly necessary for GET
+            }
+        });
+
+        if (!response.ok) {
+            let errorBodyDetail = "";
+            try {
+                const errorBodyText = await response.text(); // Get raw text
+                errorBodyDetail = errorBodyText.substring(0, 500); // Limit length for error message
+                console.error(`Helix Monitor: API Error Response Text (Status ${response.status}): ${errorBodyText}`);
+            } catch (e) {
+                console.warn('Helix Monitor: Could not read API error body.');
+                errorBodyDetail = "(could not read error body)";
+            }
+            throw new Error(`API request failed: ${response.status} ${response.statusText}. Details: ${errorBodyDetail}`);
+        }
+
+        const parsedResponse = await response.json();
+        // console.log('Helix Monitor: Raw Real API Response:', JSON.stringify(parsedResponse, null, 2)); // For debugging
+
+        // Transform response
+        let apiTotalLimit = Infinity; // Default to no limit
+        if (parsedResponse.limit === "") {
+            apiTotalLimit = Infinity;
+            console.log("Helix Monitor: API reports no limit (empty string).");
+        } else if (parsedResponse.limit && !isNaN(parseInt(parsedResponse.limit, 10))) {
+            apiTotalLimit = parseInt(parsedResponse.limit, 10);
+            console.log(`Helix Monitor: API reports limit: ${apiTotalLimit}`);
+        } else if (parsedResponse.hasOwnProperty('limit')) { // It has the key, but not empty or valid number
+            console.warn(`Helix Monitor: API returned unexpected value for limit: "${parsedResponse.limit}". Treating as no limit.`);
+            apiTotalLimit = Infinity;
+        }
+
+
+        const transformedData = {
+            current_usage_count: parsedResponse.data ? parsedResponse.data.length : 0,
+            // API spec says: "// ... more items, sorted oldest to newest" - so assume sorted.
+            messages: parsedResponse.data ? parsedResponse.data.map(item => ({
+                ...item, // Keep original fields like 'model'
+                timestamp_ms: item.timestamp * 1000 // Convert API's seconds to milliseconds
+            })) : [],
+            total_limit: apiTotalLimit
+        };
+        // console.log('Helix Monitor: Transformed API Data:', JSON.stringify(transformedData, null, 2)); // For debugging
+        return transformedData;
+
+    } catch (error) {
+        console.error('Helix Monitor: Network error or other issue fetching real Helix usage data:', error);
+        throw error; // Re-throw to be caught by refreshUsageData
+    }
+}
 // --- Timer Logic ---
 function startUsageCountdown(expiryTimeMs) {
     clearInterval(usageCountdownInterval);
@@ -132,37 +193,41 @@ async function refreshUsageData() {
     }
 
     try {
-        const data = await fetchHelixUsageData_mock(helixApiKey);
+        const data = await fetchHelixUsageData_real(helixApiKey); // MODIFIED: Call real API
 
         if (messagesUsedText) {
-            messagesUsedText.textContent = `Messages Used: ${data.current_usage_count} / ${data.total_limit}`;
+            if (typeof data.total_limit === 'number' && isFinite(data.total_limit)) {
+                messagesUsedText.textContent = `Messages Used: ${data.current_usage_count} / ${data.total_limit}`;
+            } else { // No limit or invalid limit
+                messagesUsedText.textContent = `Messages Used: ${data.current_usage_count}`;
+            }
         }
 
         if (nextMessageTimeText) {
-            if (data.current_usage_count === 0) {
+            if (data.current_usage_count === 0 || !data.messages || data.messages.length === 0) {
                 nextMessageTimeText.textContent = 'Next Message In: Ready';
                 clearInterval(usageCountdownInterval);
-            } else if (data.messages && data.messages.length > 0) {
-                // Messages are already sorted by the mock function (oldest first)
-                const oldestMessageTimestamp = new Date(data.messages[0].timestamp).getTime();
-                const expiryTimeMs = oldestMessageTimestamp + (24 * 60 * 60 * 1000);
+                nextMessageExpiryTimeMs = null; // Clear stored expiry time
+                console.log("Helix Monitor: No messages used or messages array empty. Timer cleared, UI set to Ready.");
+            } else {
+                // Messages exist, data.messages[0] is the oldest.
+                // timestamp_ms is already converted by fetchHelixUsageData_real
+                const oldestMessageTimestampMs = data.messages[0].timestamp_ms;
+                const calculatedExpiryTimeMs = oldestMessageTimestampMs + (24 * 60 * 60 * 1000);
                 
-                if (expiryTimeMs <= Date.now()) {
-                    nextMessageTimeText.textContent = 'Next Message In: Refreshing...';
+                console.log(`Helix Monitor: Oldest msg ts (ms): ${oldestMessageTimestampMs}, Calculated expiry (ms): ${calculatedExpiryTimeMs}, Now (ms): ${Date.now()}`);
+
+                if (calculatedExpiryTimeMs <= Date.now()) {
+                    // Oldest message is already expired according to calculation
+                    nextMessageTimeText.textContent = 'Next Message In: Slot Open!'; // Or "Ready"
                     clearInterval(usageCountdownInterval);
-                    console.log("Helix Monitor: Oldest message already expired, triggering immediate refresh.");
-                    // Add a small delay to prevent potential rapid loop if mock always returns expired
-                    setTimeout(refreshUsageData, 500);
+                    nextMessageExpiryTimeMs = null; // Clear stored expiry time
+                    console.log("Helix Monitor: Oldest message already expired. UI updated, timer cleared. No immediate auto-refresh from this path.");
+                    // Removed: setTimeout(refreshUsageData, 1500); // This was causing the loop
                 } else {
-                    startUsageCountdown(expiryTimeMs);
+                    // Oldest message has a future expiry time
+                    startUsageCountdown(calculatedExpiryTimeMs);
                 }
-            } else if (data.current_usage_count > 0 && (!data.messages || data.messages.length === 0)) {
-                nextMessageTimeText.textContent = 'Next Message In: Unknown (No msgs)';
-                clearInterval(usageCountdownInterval);
-                console.warn("Helix Monitor: Usage count > 0 but no messages array. Timer not started.");
-            } else { // current_usage_count < total_limit and no specific message expiring soon (or other unhandled cases)
-                nextMessageTimeText.textContent = 'Next Message In: Ready';
-                clearInterval(usageCountdownInterval);
             }
         }
         // console.log('Helix Monitor: UI updated with new data.');
