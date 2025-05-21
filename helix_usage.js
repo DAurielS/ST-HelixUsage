@@ -11,6 +11,7 @@ const context = SillyTavern.getContext();
 let isHelixConfigActive = false;
 let usageCountdownInterval = null;
 let nextMessageExpiryTimeMs = null;
+let hourlyBreakdownData = null; // To store hourly breakdown results
 
 // --- Extension Constants ---
 const extensionName = 'ST-HelixUsage';
@@ -41,6 +42,9 @@ function loadHelixSettings() {
     } else {
         console.warn("Helix Monitor: #helix-usage-hourly-toggle not found during loadHelixSettings.");
     }
+    // Call updateHourlyBreakdownUI here to ensure its state is correct after settings load / init
+    // This assumes hourlyBreakdownData might have been populated by an initial refreshUsageData if active
+    updateHourlyBreakdownUI(hourlyBreakdownData);
 }
 
 // --- Main Extension Logic (Initialization, API calls, UI updates for usage display) ---
@@ -63,6 +67,15 @@ function formatMillisecondsToTime(ms) {
     } else {
         return `${pad(minutes)}:${pad(seconds)}`;
     }
+}
+
+// Helper function to format 24-hour to AM/PM
+function formatHourForDisplay(hour24) {
+    if (hour24 < 0 || hour24 > 23) return "Invalid Hour";
+    const ampm = hour24 >= 12 ? 'PM' : 'AM';
+    let hour12 = hour24 % 12;
+    if (hour12 === 0) hour12 = 12; // 0 should be 12 AM, 12 should be 12 PM
+    return `${hour12} ${ampm}`;
 }
 
 // --- Mock API Function ---
@@ -169,6 +182,61 @@ async function fetchHelixUsageData_real(apiKey) {
         throw error; // Re-throw to be caught by refreshUsageData
     }
 }
+
+// --- Hourly Breakdown Calculation ---
+/**
+ * Calculates the hourly breakdown of message expiries.
+ * @param {Array<Object>} activeMessages - Array of message objects, each with a `timestamp_ms`.
+ * @returns {Object} An object where keys are hours (0-23) and values are counts of messages resetting in that hour.
+ */
+function calculateHourlyBreakdown(activeMessages) {
+    const now = new Date();
+    const todayStartMs = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(); // Midnight today
+    const tomorrowStartMs = todayStartMs + (24 * 60 * 60 * 1000); // Midnight tomorrow
+    const dayAfterTomorrowStartMs = tomorrowStartMs + (24 * 60 * 60 * 1000); // Midnight the day after tomorrow
+
+    const dailyBuckets = {
+        today: {},    // Messages resetting from now until midnight today
+        tomorrow: {}  // Messages resetting from midnight tonight until midnight tomorrow night
+    };
+
+    if (!activeMessages || activeMessages.length === 0) {
+        return dailyBuckets; // Return empty buckets
+    }
+
+    for (const message of activeMessages) {
+        if (typeof message.timestamp_ms !== 'number') {
+            console.warn('Helix Monitor: calculateHourlyBreakdown encountered a message without a valid timestamp_ms:', message);
+            continue;
+        }
+        const expiryMs = message.timestamp_ms + (24 * 60 * 60 * 1000);
+
+        // Only consider messages that will reset in the future relative to now.
+        if (expiryMs <= now.getTime()) {
+            continue;
+        }
+
+        const expiryDate = new Date(expiryMs);
+        const expiryHour = expiryDate.getHours(); // 0-23
+        let dayKey = null;
+
+        if (expiryMs >= now.getTime() && expiryMs < tomorrowStartMs) {
+            // Resets today (from now until midnight)
+            dayKey = 'today';
+        } else if (expiryMs >= tomorrowStartMs && expiryMs < dayAfterTomorrowStartMs) {
+            // Resets tomorrow
+            dayKey = 'tomorrow';
+        }
+        // Resets further than "tomorrow" are ignored for this breakdown,
+        // as activeMessages are filtered to the last 24h of Date.now(),
+        // so their resets (timestamp_ms + 24h) should fall within roughly the next 24h period from Date.now().
+
+        if (dayKey) {
+            dailyBuckets[dayKey][expiryHour] = (dailyBuckets[dayKey][expiryHour] || 0) + 1;
+        }
+    }
+    return dailyBuckets;
+}
 // --- Timer Logic ---
 function startUsageCountdown(expiryTimeMs) {
     clearInterval(usageCountdownInterval);
@@ -268,11 +336,144 @@ async function refreshUsageData() {
             }
         }
 
+        // --- Hourly Breakdown Logic ---
+        // Ensure extension_settings and extensionName are accessible, or pass settings object if needed
+        // Assuming extension_settings and extensionName are globally accessible in this scope as per existing patterns
+        if (extension_settings && extension_settings[extensionName] && extension_settings[extensionName].showHourlyBreakdown) {
+            if (data && data.messages && data.messages.length > 0) {
+                hourlyBreakdownData = calculateHourlyBreakdown(data.messages); // data.messages is activeMessages
+                // console.log("Helix Monitor: Hourly Breakdown Data:", JSON.stringify(hourlyBreakdownData, null, 2)); // Keep for debugging if needed
+            } else {
+                hourlyBreakdownData = null; // No active messages, clear breakdown
+                // console.log("Helix Monitor: Hourly Breakdown - No active messages to process.");
+            }
+        } else {
+            hourlyBreakdownData = null; // Setting is off, clear any stored data
+            // console.log("Helix Monitor: Hourly Breakdown setting is off. Data cleared.");
+        }
+        updateHourlyBreakdownUI(hourlyBreakdownData); // Centralized call
+
     } catch (error) {
         console.error('Helix Monitor: Error fetching or processing Helix usage data:', error);
         if (messagesUsedText) messagesUsedText.textContent = 'Messages Used: Error';
         if (nextMessageTimeText) nextMessageTimeText.textContent = 'Next Message In: Error';
         clearInterval(usageCountdownInterval); // Stop timer on error
+        hourlyBreakdownData = null; // Clear breakdown data on error too
+        updateHourlyBreakdownUI(hourlyBreakdownData); // Ensure UI is cleared/hidden on error
+    }
+}
+
+// --- Hourly Breakdown UI Functions ---
+function createHourlyBreakdownUIContainer() {
+    const listContainer = document.createElement('div');
+    listContainer.id = 'helix-hourly-breakdown-list';
+    // CSS will handle initial display:none
+    return listContainer;
+}
+
+function updateHourlyBreakdownUI(dailyBuckets) {
+    const listContainer = document.getElementById('helix-hourly-breakdown-list');
+    if (!listContainer) {
+        console.warn("Helix Monitor: Hourly breakdown list container not found.");
+        return;
+    }
+
+    listContainer.innerHTML = ''; // Clear previous content
+    const currentSettings = extension_settings[extensionName] || defaultHelixSettings;
+
+    // Check if there's any data to display and if the setting is on
+    const hasTodayData = dailyBuckets && dailyBuckets.today && Object.keys(dailyBuckets.today).length > 0;
+    const hasTomorrowData = dailyBuckets && dailyBuckets.tomorrow && Object.keys(dailyBuckets.tomorrow).length > 0;
+
+    if (!currentSettings.showHourlyBreakdown || (!hasTodayData && !hasTomorrowData)) {
+        listContainer.style.display = 'none';
+        return;
+    }
+
+    listContainer.style.display = 'block';
+    let itemsAdded = 0;
+    const now = new Date();
+    const currentHour = now.getHours();
+
+    // Function to add items for a given day's data and starting hour
+    const addItemsForDay = (dayData, headerText, startHour, endHour) => {
+        let dayItemsAdded = 0;
+        const daySpecificList = [];
+
+        for (let h = startHour; h < endHour; h++) {
+            const actualHour = h % 24;
+            if (dayData && dayData[actualHour] > 0) {
+                const count = dayData[actualHour];
+                const displayHour = (actualHour + 1) % 24;
+                const formattedDisplayHour = formatHourForDisplay(displayHour);
+                const itemElement = document.createElement('p');
+                itemElement.textContent = `Resetting by ${formattedDisplayHour}: ${count} message${count > 1 ? 's' : ''}`;
+                daySpecificList.push(itemElement);
+                dayItemsAdded++;
+            }
+        }
+
+        if (dayItemsAdded > 0) {
+            const headerElement = document.createElement('h4');
+            headerElement.textContent = headerText;
+            listContainer.appendChild(headerElement);
+            daySpecificList.forEach(item => listContainer.appendChild(item));
+            itemsAdded += dayItemsAdded;
+        }
+    };
+
+    // Display "Today"
+    // For "Today", we only show hours from the current hour up to 23
+    if (hasTodayData) {
+        let todayDayItemsAdded = 0;
+        const todayDaySpecificList = [];
+        for (let h = currentHour; h < 24; h++) { // h is the actualExpiryHour here
+            if (dailyBuckets.today[h] > 0) {
+                const count = dailyBuckets.today[h];
+                const displayHour = (h + 1) % 24;
+                const formattedDisplayHour = formatHourForDisplay(displayHour);
+                const itemElement = document.createElement('p');
+                itemElement.textContent = `Resetting by ${formattedDisplayHour}: ${count} message${count > 1 ? 's' : ''}`;
+                todayDaySpecificList.push(itemElement);
+                todayDayItemsAdded++;
+            }
+        }
+        if (todayDayItemsAdded > 0) {
+            const headerElement = document.createElement('h4');
+            headerElement.textContent = "Today";
+            listContainer.appendChild(headerElement);
+            todayDaySpecificList.forEach(item => listContainer.appendChild(item));
+            itemsAdded += todayDayItemsAdded;
+        }
+    }
+
+    // Display "Tomorrow"
+    // For "Tomorrow", we show all hours from 0 to 23 that have entries
+    if (hasTomorrowData) {
+        let tomorrowDayItemsAdded = 0;
+        const tomorrowDaySpecificList = [];
+        for (let h = 0; h < 24; h++) { // h is the actualExpiryHour here
+            if (dailyBuckets.tomorrow[h] > 0) {
+                const count = dailyBuckets.tomorrow[h];
+                const displayHour = (h + 1) % 24;
+                const formattedDisplayHour = formatHourForDisplay(displayHour);
+                const itemElement = document.createElement('p');
+                itemElement.textContent = `Resetting by ${formattedDisplayHour}: ${count} message${count > 1 ? 's' : ''}`;
+                tomorrowDaySpecificList.push(itemElement);
+                tomorrowDayItemsAdded++;
+            }
+        }
+        if (tomorrowDayItemsAdded > 0) {
+            const headerElement = document.createElement('h4');
+            headerElement.textContent = "Tomorrow";
+            listContainer.appendChild(headerElement);
+            tomorrowDaySpecificList.forEach(item => listContainer.appendChild(item));
+            itemsAdded += tomorrowDayItemsAdded;
+        }
+    }
+
+    if (itemsAdded === 0) {
+        listContainer.style.display = 'none';
     }
 }
 
@@ -290,6 +491,10 @@ function createUsageDisplayUI() {
     nextMessageTimeP.id = 'helix-next-message-time-text';
     nextMessageTimeP.textContent = 'Next Message In: N/A';
     container.appendChild(nextMessageTimeP);
+
+    // Create and append the hourly breakdown container here as well
+    const hourlyBreakdownUI = createHourlyBreakdownUIContainer();
+    container.appendChild(hourlyBreakdownUI);
 
     return container;
 }
@@ -329,13 +534,23 @@ function checkAndUpdateHelixUI() {
             clearInterval(usageCountdownInterval); // Stop timer
             if (messagesUsedText) messagesUsedText.textContent = 'Messages Used: N/A';
             if (nextMessageTimeText) nextMessageTimeText.textContent = 'Next Message In: N/A';
-            console.log('Helix Monitor: Became inactive. UI reset and timer cleared.');
+            
+            // Also hide and clear the hourly breakdown UI
+            const hourlyListContainer = document.getElementById('helix-hourly-breakdown-list');
+            if (hourlyListContainer) {
+                hourlyListContainer.style.display = 'none';
+                hourlyListContainer.innerHTML = '';
+            }
+            hourlyBreakdownData = null; // Clear data when main UI becomes inactive
+
+            console.log('Helix Monitor: Became inactive. UI reset, timer cleared, hourly breakdown hidden.');
         }
     }
     // If state hasn't changed, do nothing here. Refreshes are triggered by:
     // 1. Becoming active (above).
     // 2. Generation end/stopped events.
     // 3. Timer expiry.
+    // 4. Settings changes (for hourly breakdown visibility specifically)
 }
 
 // Function to initialize and inject the Usage Display UI
@@ -427,6 +642,7 @@ jQuery(async () => {
             extension_settings[extensionName].showHourlyBreakdown = $(this).prop('checked');
             saveSettingsDebounced();
             console.log(`Helix Monitor: Hourly breakdown setting changed to ${$(this).prop('checked')}`);
+            updateHourlyBreakdownUI(hourlyBreakdownData); // Update UI immediately on toggle change
         });
 
         // Load initial settings values into the UI
