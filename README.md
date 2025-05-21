@@ -7,7 +7,7 @@ A SillyTavern extension that displays API usage information for `https://helixmi
 ## Features
 
 *   **Current Usage Display:** Shows the number of messages used within the current 24-hour rolling window.
-*   **Total Limit Indication:** If the API provides a total message limit, it displays usage as "X / Y messages"; otherwise, it shows "X messages".
+*   **Total Limit Indication:** If your key has a daily limit, it displays usage as "X / Y messages"; otherwise, it shows "X messages".
 *   **Next Message Countdown:** A real-time countdown timer indicates when the next message slot is expected to become available based on the oldest message used in the last 24 hours.
 *   **Conditional Activation:** The extension's UI automatically activates and deactivates based on whether SillyTavern's "Custom Endpoint" is configured to `https://helixmind.online`.
 
@@ -20,7 +20,7 @@ A SillyTavern extension that displays API usage information for `https://helixmi
 
 ## Requirements/Prerequisites
 
-*   A working installation of **SillyTavern**.
+*   A working installation of **SillyTavern** (1.12.14 or later).
 *   An **API key** for the `https://helixmind.online` service.
 *   SillyTavern must be configured to use the **"Custom Endpoint"** API provider.
     *   The URL for the custom endpoint must be set to `https://helixmind.online` (or start with it).
@@ -29,7 +29,7 @@ A SillyTavern extension that displays API usage information for `https://helixmi
 
 ## Installation
 
-1. Navigate to the SillyTavern Extensions menu by clicking the puzzle piece icon in the top right corner.
+1. Navigate to the SillyTavern Extensions menu by clicking the building blocks icon in the top bar.
 2. Open the "Install Extension" pop-up window.
 3. In the Install from URL section, enter `https://github.com/DAurielS/ST-HelixUsage`.
 4. Click "Install just for me" and wait for the extension to download and install.
