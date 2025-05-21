@@ -1,7 +1,7 @@
 {
     "display_name": "Helix Usage Monitor",
-    "author": "Your Name",
-    "version": "0.1.0",
+    "author": "MonGauss",
+    "version": "1.0",
     "description": "Displays API usage information for HelixMind API users.",
     "js": "helix_usage.js",
     "css": "helix_usage.css",
