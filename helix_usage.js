@@ -1,7 +1,8 @@
 // SillyTavern Helix Usage Monitor Extension
 
-import { eventSource, event_types, callPopup } from "../../../../script.js"; // Added callPopup
-import { findSecret, SECRET_KEYS } from "../../../secrets.js"; // Added imports for secrets
+import { saveSettingsDebounced, eventSource, event_types} from "../../../../script.js"; // Added saveSettingsDebounced
+import { findSecret, SECRET_KEYS } from "../../../secrets.js";
+import { extension_settings } from "../../../extensions.js";
 
 // Get the SillyTavern context
 const context = SillyTavern.getContext();
@@ -11,67 +12,38 @@ let isHelixConfigActive = false;
 let usageCountdownInterval = null;
 let nextMessageExpiryTimeMs = null;
 
-// --- Settings Constants and Management ---
-const ST_HELIX_USAGE_SETTINGS_MODULE = 'ST-HelixUsage-Settings';
+// --- Extension Constants ---
+const extensionName = 'ST-HelixUsage';
+const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`; // Relative path for loading HTML
 const defaultHelixSettings = {
     showHourlyBreakdown: false,
 };
 
-// Function to get or initialize extension settings
-function getHelixUsageSettings() {
-    if (!context.extensionSettings[ST_HELIX_USAGE_SETTINGS_MODULE]) {
-        context.extensionSettings[ST_HELIX_USAGE_SETTINGS_MODULE] = structuredClone(defaultHelixSettings);
-    }
-    // Ensure all default keys exist
-    for (const key in defaultHelixSettings) {
-        if (context.extensionSettings[ST_HELIX_USAGE_SETTINGS_MODULE][key] === undefined) {
-            context.extensionSettings[ST_HELIX_USAGE_SETTINGS_MODULE][key] = defaultHelixSettings[key];
+// --- Settings Management ---
+// Loads the extension settings if they exist, otherwise initializes them to the defaults.
+function loadHelixSettings() {
+    // Create the settings if they don't exist or are empty
+    if (!extension_settings[extensionName] || Object.keys(extension_settings[extensionName]).length === 0) {
+        extension_settings[extensionName] = { ...defaultHelixSettings };
+    } else {
+        // Ensure all default keys exist if settings were loaded but might be from an older version
+        for (const key in defaultHelixSettings) {
+            if (extension_settings[extensionName][key] === undefined) {
+                extension_settings[extensionName][key] = defaultHelixSettings[key];
+            }
         }
     }
-    return context.extensionSettings[ST_HELIX_USAGE_SETTINGS_MODULE];
-}
 
-// Function to add the settings panel to SillyTavern's UI
-function addHelixUsageSettingsPanel() {
-    const settingsHtml = `
-<div id="st-helix-usage-settings-panel" class="extension_settings_section">
-    <h4>ST-HelixUsage Settings</h4>
-    <div class="form-group">
-        <input type="checkbox" id="helix-usage-hourly-toggle" name="helix-usage-hourly-toggle" style="margin-right: 5px;" />
-        <label for="helix-usage-hourly-toggle">Show Hourly Message Reset Breakdown</label>
-    </div>
-    <!-- Additional settings for ST-HelixUsage can be added here in the future -->
-</div>
-    `;
-
-    // The first argument is the display name for the settings section header
-    context.addExtensionSettings('ST-HelixUsage', settingsHtml);
-
-    // After addExtensionSettings, the HTML should be in the DOM.
-    // We can now find the element and attach event listeners.
-    const toggle = document.getElementById('helix-usage-hourly-toggle');
-
-    if (toggle) {
-        const currentSettings = getHelixUsageSettings();
-        toggle.checked = currentSettings.showHourlyBreakdown;
-
-        toggle.addEventListener('change', () => {
-            const settingsToUpdate = getHelixUsageSettings();
-            settingsToUpdate.showHourlyBreakdown = toggle.checked;
-            context.saveSettingsDebounced();
-            console.log(`Helix Monitor: Hourly breakdown setting changed to ${toggle.checked}`);
-            // If this setting needs to trigger an immediate UI update elsewhere in the extension,
-            // call the relevant function here. For example, if the hourly breakdown display
-            // is part of the main UI, you might call a function to refresh that display.
-        });
+    // Update UI elements with loaded settings
+    const currentSettings = extension_settings[extensionName];
+    if ($('#helix-usage-hourly-toggle').length) {
+        $('#helix-usage-hourly-toggle').prop('checked', currentSettings.showHourlyBreakdown);
     } else {
-        // This might happen if addExtensionSettings is async and doesn't complete
-        // before getElementById is called, or if the ID is incorrect.
-        // However, addExtensionSettings is generally expected to make elements available.
-        console.warn("Helix Monitor: Could not find 'helix-usage-hourly-toggle' in settings panel immediately after addExtensionSettings. The event listener might not be attached.");
+        console.warn("Helix Monitor: #helix-usage-hourly-toggle not found during loadHelixSettings.");
     }
 }
 
+// --- Main Extension Logic (Initialization, API calls, UI updates for usage display) ---
 
 // Log to confirm the extension is loaded
 console.log("Helix Usage Monitor extension loaded.");
@@ -366,16 +338,12 @@ function checkAndUpdateHelixUI() {
     // 3. Timer expiry.
 }
 
-// Function to initialize and inject the UI
+// Function to initialize and inject the Usage Display UI
 function initHelixUsageUI() {
-    // Check if the UI already exists
+    // Check if the main usage display UI already exists
     if (document.getElementById('helix-usage-container')) {
-        console.log("Helix Usage Monitor UI already exists.");
-        // Even if main UI exists, ensure settings panel is added (idempotent if already there)
-        // or that its interactive elements are correctly initialized.
-        // Calling addHelixUsageSettingsPanel here ensures it runs.
-        addHelixUsageSettingsPanel();
-        return;
+        console.log("Helix Usage Monitor main display UI already exists.");
+        return; // Main display already initialized
     }
 
     const usageUI = createUsageDisplayUI();
@@ -434,39 +402,47 @@ function initHelixUsageUI() {
     }
 
     if (injectionSuccessful) {
-        checkAndUpdateHelixUI();
-        // Add the settings panel after the main UI is initialized and injected.
-        addHelixUsageSettingsPanel();
+        checkAndUpdateHelixUI(); // Set initial state for the main usage display
     }
 }
 
-// Initialize the UI when the script loads
-if (typeof jQuery !== 'undefined') {
-    jQuery(async () => {
-        initHelixUsageUI();
-    });
-} else {
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initHelixUsageUI);
-    } else {
-        initHelixUsageUI();
+// jQuery ready function - Main entry point for the extension
+jQuery(async () => {
+    console.log("Helix Usage Monitor: jQuery ready.");
+    // Initialize the main usage display UI first
+    initHelixUsageUI();
+
+    try {
+        // Load settings HTML
+        const settingsHtml = await $.get(`${extensionFolderPath}/helix_usage_settings.html`);
+        // Append settings HTML to the designated area in SillyTavern's settings
+        $('#extensions_settings').append(settingsHtml); // Standard ST practice
+        console.log("Helix Monitor: Settings HTML loaded and appended.");
+
+        // Attach event listener for the toggle
+        $('#helix-usage-hourly-toggle').on('change', function() {
+            if (!extension_settings[extensionName]) {
+                extension_settings[extensionName] = { ...defaultHelixSettings };
+            }
+            extension_settings[extensionName].showHourlyBreakdown = $(this).prop('checked');
+            saveSettingsDebounced();
+            console.log(`Helix Monitor: Hourly breakdown setting changed to ${$(this).prop('checked')}`);
+        });
+
+        // Load initial settings values into the UI
+        loadHelixSettings();
+        console.log("Helix Monitor: Initial settings loaded into UI.");
+
+    } catch (error) {
+        console.error("Helix Monitor: Error loading or initializing settings panel:", error);
     }
-}
+});
 
-
-// Listen for settings updates to re-evaluate conditions
+// Listen for SillyTavern settings updates to re-evaluate conditions for main display
 eventSource.on(event_types.SETTINGS_UPDATED, () => {
     console.log("Helix Usage Monitor: SETTINGS_UPDATED event received.");
     checkAndUpdateHelixUI();
-    // Also re-check the settings panel's toggle state in case settings were changed externally somehow
-    const toggle = document.getElementById('helix-usage-hourly-toggle');
-    if (toggle) {
-        const currentSettings = getHelixUsageSettings();
-        if (toggle.checked !== currentSettings.showHourlyBreakdown) {
-            toggle.checked = currentSettings.showHourlyBreakdown;
-            console.log("Helix Monitor: Settings panel toggle updated from SETTINGS_UPDATED event.");
-        }
-    }
+    // Checking Settings UI here should be unnecessary assuming the button listener is set up correctly
 });
 
 // Listen for generation ended event to trigger refresh
