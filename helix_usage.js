@@ -395,33 +395,6 @@ function updateHourlyBreakdownUI(dailyBuckets) {
     const now = new Date();
     const currentHour = now.getHours();
 
-    // Function to add items for a given day's data and starting hour
-    const addItemsForDay = (dayData, headerText, startHour, endHour) => {
-        let dayItemsAdded = 0;
-        const daySpecificList = [];
-
-        for (let h = startHour; h < endHour; h++) {
-            const actualHour = h % 24;
-            if (dayData && dayData[actualHour] > 0) {
-                const count = dayData[actualHour];
-                const displayHour = (actualHour + 1) % 24;
-                const formattedDisplayHour = formatHourForDisplay(displayHour);
-                const itemElement = document.createElement('p');
-                itemElement.textContent = `Resetting by ${formattedDisplayHour}: ${count} message${count > 1 ? 's' : ''}`;
-                daySpecificList.push(itemElement);
-                dayItemsAdded++;
-            }
-        }
-
-        if (dayItemsAdded > 0) {
-            const headerElement = document.createElement('h4');
-            headerElement.textContent = headerText;
-            listContainer.appendChild(headerElement);
-            daySpecificList.forEach(item => listContainer.appendChild(item));
-            itemsAdded += dayItemsAdded;
-        }
-    };
-
     // Display "Today"
     // For "Today", we only show hours from the current hour up to 23
     if (hasTodayData) {
@@ -639,10 +612,29 @@ jQuery(async () => {
             if (!extension_settings[extensionName]) {
                 extension_settings[extensionName] = { ...defaultHelixSettings };
             }
-            extension_settings[extensionName].showHourlyBreakdown = $(this).prop('checked');
+            const newShowSetting = $(this).prop('checked');
+            extension_settings[extensionName].showHourlyBreakdown = newShowSetting;
             saveSettingsDebounced();
-            console.log(`Helix Monitor: Hourly breakdown setting changed to ${$(this).prop('checked')}`);
-            updateHourlyBreakdownUI(hourlyBreakdownData); // Update UI immediately on toggle change
+            console.log(`Helix Monitor: Hourly breakdown setting changed to ${newShowSetting}`);
+
+            if (newShowSetting && isHelixConfigActive) {
+                // User wants to show it, and main UI is active.
+                // Check if we have data. If not, refresh.
+                const hasData = hourlyBreakdownData &&
+                                ((hourlyBreakdownData.today && Object.keys(hourlyBreakdownData.today).length > 0) ||
+                                 (hourlyBreakdownData.tomorrow && Object.keys(hourlyBreakdownData.tomorrow).length > 0));
+                if (!hasData) {
+                    console.log("Helix Monitor: Toggle ON, main UI active, no breakdown data. Refreshing.");
+                    refreshUsageData(); // This will call updateHourlyBreakdownUI with new data and current setting
+                } else {
+                    // Data exists, just update the UI with the new setting state
+                    updateHourlyBreakdownUI(hourlyBreakdownData);
+                }
+            } else {
+                // User wants to hide it, or main UI is not active.
+                // updateHourlyBreakdownUI will handle hiding based on the new setting or if data is null.
+                updateHourlyBreakdownUI(hourlyBreakdownData);
+            }
         });
 
         // Load initial settings values into the UI
