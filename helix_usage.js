@@ -11,6 +11,68 @@ let isHelixConfigActive = false;
 let usageCountdownInterval = null;
 let nextMessageExpiryTimeMs = null;
 
+// --- Settings Constants and Management ---
+const ST_HELIX_USAGE_SETTINGS_MODULE = 'ST-HelixUsage-Settings';
+const defaultHelixSettings = {
+    showHourlyBreakdown: false,
+};
+
+// Function to get or initialize extension settings
+function getHelixUsageSettings() {
+    if (!context.extensionSettings[ST_HELIX_USAGE_SETTINGS_MODULE]) {
+        context.extensionSettings[ST_HELIX_USAGE_SETTINGS_MODULE] = structuredClone(defaultHelixSettings);
+    }
+    // Ensure all default keys exist
+    for (const key in defaultHelixSettings) {
+        if (context.extensionSettings[ST_HELIX_USAGE_SETTINGS_MODULE][key] === undefined) {
+            context.extensionSettings[ST_HELIX_USAGE_SETTINGS_MODULE][key] = defaultHelixSettings[key];
+        }
+    }
+    return context.extensionSettings[ST_HELIX_USAGE_SETTINGS_MODULE];
+}
+
+// Function to add the settings panel to SillyTavern's UI
+function addHelixUsageSettingsPanel() {
+    const settingsHtml = `
+<div id="st-helix-usage-settings-panel" class="extension_settings_section">
+    <h4>ST-HelixUsage Settings</h4>
+    <div class="form-group">
+        <input type="checkbox" id="helix-usage-hourly-toggle" name="helix-usage-hourly-toggle" style="margin-right: 5px;" />
+        <label for="helix-usage-hourly-toggle">Show Hourly Message Reset Breakdown</label>
+    </div>
+    <!-- Additional settings for ST-HelixUsage can be added here in the future -->
+</div>
+    `;
+
+    // The first argument is the display name for the settings section header
+    context.addExtensionSettings('ST-HelixUsage', settingsHtml);
+
+    // After addExtensionSettings, the HTML should be in the DOM.
+    // We can now find the element and attach event listeners.
+    const toggle = document.getElementById('helix-usage-hourly-toggle');
+
+    if (toggle) {
+        const currentSettings = getHelixUsageSettings();
+        toggle.checked = currentSettings.showHourlyBreakdown;
+
+        toggle.addEventListener('change', () => {
+            const settingsToUpdate = getHelixUsageSettings();
+            settingsToUpdate.showHourlyBreakdown = toggle.checked;
+            context.saveSettingsDebounced();
+            console.log(`Helix Monitor: Hourly breakdown setting changed to ${toggle.checked}`);
+            // If this setting needs to trigger an immediate UI update elsewhere in the extension,
+            // call the relevant function here. For example, if the hourly breakdown display
+            // is part of the main UI, you might call a function to refresh that display.
+        });
+    } else {
+        // This might happen if addExtensionSettings is async and doesn't complete
+        // before getElementById is called, or if the ID is incorrect.
+        // However, addExtensionSettings is generally expected to make elements available.
+        console.warn("Helix Monitor: Could not find 'helix-usage-hourly-toggle' in settings panel immediately after addExtensionSettings. The event listener might not be attached.");
+    }
+}
+
+
 // Log to confirm the extension is loaded
 console.log("Helix Usage Monitor extension loaded.");
 
@@ -51,16 +113,13 @@ async function fetchHelixUsageData_mock(apiKey) {
         messages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
     }
     
-    // Ensure we don't have more messages than current_usage_count (though loop above should handle it)
     const final_current_usage_count = messages.length;
-
 
     const mockResponse = {
         total_limit: total_limit,
         current_usage_count: final_current_usage_count,
         messages: messages
     };
-    // console.log("Mock data generated:", JSON.parse(JSON.stringify(mockResponse))); // Log a deep copy
     return mockResponse;
 }
 
@@ -74,15 +133,14 @@ async function fetchHelixUsageData_real(apiKey) {
             method: 'GET',
             headers: {
                 'Authorization': `Bearer ${apiKey}`
-                // 'Content-Type': 'application/json' // Not strictly necessary for GET
             }
         });
 
         if (!response.ok) {
             let errorBodyDetail = "";
             try {
-                const errorBodyText = await response.text(); // Get raw text
-                errorBodyDetail = errorBodyText.substring(0, 500); // Limit length for error message
+                const errorBodyText = await response.text(); 
+                errorBodyDetail = errorBodyText.substring(0, 500); 
                 console.error(`Helix Monitor: API Error Response Text (Status ${response.status}): ${errorBodyText}`);
             } catch (e) {
                 console.warn('Helix Monitor: Could not read API error body.');
@@ -94,7 +152,26 @@ async function fetchHelixUsageData_real(apiKey) {
         const parsedResponse = await response.json();
         // console.log('Helix Monitor: Raw Real API Response:', JSON.stringify(parsedResponse, null, 2)); // For debugging
 
-        // Transform response
+        // Filter messages to within the last 24 hours and transform
+        const twentyFourHoursAgoMs = Date.now() - (24 * 60 * 60 * 1000);
+        let activeMessages = [];
+
+        if (parsedResponse.data && Array.isArray(parsedResponse.data)) {
+            activeMessages = parsedResponse.data
+                .map(item => ({
+                    ...item, // Keep original fields like 'model'
+                    timestamp_ms: item.timestamp * 1000 // Convert API's seconds to milliseconds
+                }))
+                .filter(message => message.timestamp_ms >= twentyFourHoursAgoMs);
+            
+            // Sort active messages by timestamp, oldest first, to ensure messages[0] is the oldest for timer logic
+            activeMessages.sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+            console.log(`Helix Monitor: Found ${activeMessages.length} messages within the last 24 hours out of ${parsedResponse.data.length} total from API.`);
+        } else {
+            console.log("Helix Monitor: No 'data' array in API response or it's not an array.");
+        }
+
+        // Handle total_limit
         let apiTotalLimit = Infinity; // Default to no limit
         if (parsedResponse.limit === "") {
             apiTotalLimit = Infinity;
@@ -107,14 +184,9 @@ async function fetchHelixUsageData_real(apiKey) {
             apiTotalLimit = Infinity;
         }
 
-
         const transformedData = {
-            current_usage_count: parsedResponse.data ? parsedResponse.data.length : 0,
-            // API spec says: "// ... more items, sorted oldest to newest" - so assume sorted.
-            messages: parsedResponse.data ? parsedResponse.data.map(item => ({
-                ...item, // Keep original fields like 'model'
-                timestamp_ms: item.timestamp * 1000 // Convert API's seconds to milliseconds
-            })) : [],
+            current_usage_count: activeMessages.length,
+            messages: activeMessages, // These messages already have timestamp_ms
             total_limit: apiTotalLimit
         };
         // console.log('Helix Monitor: Transformed API Data:', JSON.stringify(transformedData, null, 2)); // For debugging
@@ -142,15 +214,14 @@ function startUsageCountdown(expiryTimeMs) {
             clearInterval(usageCountdownInterval);
             if (nextMessageTimeText) nextMessageTimeText.textContent = 'Next Message In: Refreshing...';
             console.log("Helix Monitor: Countdown expired, refreshing usage data.");
-            refreshUsageData(); // Trigger refresh
+            refreshUsageData(); 
         } else {
             if (nextMessageTimeText) nextMessageTimeText.textContent = `Next Message In: ${formatMillisecondsToTime(remainingMs)}`;
         }
     };
 
-    updateTimerDisplay(); // Initial display update
+    updateTimerDisplay(); 
     usageCountdownInterval = setInterval(updateTimerDisplay, 1000);
-    // console.log(`Helix Monitor: Countdown started. Target expiry: ${new Date(expiryTimeMs).toISOString()}`);
 }
 
 
@@ -159,16 +230,12 @@ async function refreshUsageData() {
     const messagesUsedText = document.getElementById('helix-messages-used-text');
     const nextMessageTimeText = document.getElementById('helix-next-message-time-text');
 
-    // This function assumes isHelixConfigActive is true because it's called
-    // by checkAndUpdateHelixUI (on activation), generation event listeners (which check),
-    // or timer expiry (which implies it was active).
     if (!isHelixConfigActive) {
         console.warn("Helix Monitor: refreshUsageData called while not active. This is unexpected. Aborting.");
         return;
     }
 
     console.log('Helix Monitor: Refreshing Helix usage data...');
-    // Set loading states immediately
     if (messagesUsedText) messagesUsedText.textContent = 'Messages Used: Loading...';
     if (nextMessageTimeText) nextMessageTimeText.textContent = 'Next Message In: Loading...';
 
@@ -181,7 +248,7 @@ async function refreshUsageData() {
             if (nextMessageTimeText) nextMessageTimeText.textContent = 'Next Message In: Key Error';
             // Display a popup to the user
             toastr.info('<h3>Helix Usage Monitor Error</h3><p>Could not retrieve the API key for the custom Helix endpoint. Please ensure your API key is correctly configured in SillyTavern for the "Custom" provider and that <code>allowKeysExposure</code> is set to <code>true</code> in your <code>config.yaml</code> file (requires server restart after changing).</p>', 'text');
-            return; // Stop further processing
+            return; 
         }
         console.log('Helix Monitor: API key retrieved successfully via findSecret.');
     } catch (err) {
@@ -189,11 +256,11 @@ async function refreshUsageData() {
         if (messagesUsedText) messagesUsedText.textContent = 'Messages Used: Key Error';
         if (nextMessageTimeText) nextMessageTimeText.textContent = 'Next Message In: Key Error';
         toastr.info('<h3>Helix Usage Monitor Error</h3><p>An error occurred while trying to retrieve the API key. Check the browser console for details.</p>', 'text');
-        return; // Stop further processing
+        return; 
     }
 
     try {
-        const data = await fetchHelixUsageData_real(helixApiKey); // MODIFIED: Call real API
+        const data = await fetchHelixUsageData_real(helixApiKey); 
 
         if (messagesUsedText) {
             if (typeof data.total_limit === 'number' && isFinite(data.total_limit)) {
@@ -207,11 +274,9 @@ async function refreshUsageData() {
             if (data.current_usage_count === 0 || !data.messages || data.messages.length === 0) {
                 nextMessageTimeText.textContent = 'Next Message In: Ready';
                 clearInterval(usageCountdownInterval);
-                nextMessageExpiryTimeMs = null; // Clear stored expiry time
+                nextMessageExpiryTimeMs = null; 
                 console.log("Helix Monitor: No messages used or messages array empty. Timer cleared, UI set to Ready.");
             } else {
-                // Messages exist, data.messages[0] is the oldest.
-                // timestamp_ms is already converted by fetchHelixUsageData_real
                 const oldestMessageTimestampMs = data.messages[0].timestamp_ms;
                 const calculatedExpiryTimeMs = oldestMessageTimestampMs + (24 * 60 * 60 * 1000);
                 
@@ -230,7 +295,6 @@ async function refreshUsageData() {
                 }
             }
         }
-        // console.log('Helix Monitor: UI updated with new data.');
 
     } catch (error) {
         console.error('Helix Monitor: Error fetching or processing Helix usage data:', error);
@@ -265,7 +329,7 @@ function checkAndUpdateHelixUI() {
     const nextMessageTimeText = document.getElementById('helix-next-message-time-text');
 
     if (!uiContainer) {
-        console.warn("Helix Monitor: UI container not found in checkAndUpdateHelixUI.");
+        console.warn("Helix Monitor: Main UI container not found in checkAndUpdateHelixUI.");
         return;
     }
 
@@ -307,6 +371,10 @@ function initHelixUsageUI() {
     // Check if the UI already exists
     if (document.getElementById('helix-usage-container')) {
         console.log("Helix Usage Monitor UI already exists.");
+        // Even if main UI exists, ensure settings panel is added (idempotent if already there)
+        // or that its interactive elements are correctly initialized.
+        // Calling addHelixUsageSettingsPanel here ensures it runs.
+        addHelixUsageSettingsPanel();
         return;
     }
 
@@ -324,7 +392,6 @@ function initHelixUsageUI() {
     }
 
     if (streamingToggleDiv && streamingToggleDiv.parentElement) {
-        // The parentElement should be div#range_block_openai or a similar container
         try {
             streamingToggleDiv.parentElement.insertBefore(usageUI, streamingToggleDiv);
             console.log("Helix Usage Monitor UI injected before the 'Streaming' toggle's div.range-block.");
@@ -340,7 +407,7 @@ function initHelixUsageUI() {
     if (!injectionSuccessful) {
         const leftNavPanel = document.getElementById('left-nav-panel');
         if (leftNavPanel) {
-            const scrollableInner = leftNavPanel.querySelector('.scrollableInner .panels'); // More specific target
+            const scrollableInner = leftNavPanel.querySelector('.scrollableInner .panels'); 
             if (scrollableInner) {
                 scrollableInner.appendChild(usageUI);
                 console.log("Helix Usage Monitor UI appended to '.scrollableInner .panels' in '#left-nav-panel' (fallback).");
@@ -361,29 +428,45 @@ function initHelixUsageUI() {
     }
 
     if (!injectionSuccessful) {
-        // Last resort: append to body if no suitable panel found.
         console.warn("Could not find a suitable parent element in the left navbar for Helix Usage Monitor UI. Appending to body as a last resort.");
         document.body.appendChild(usageUI);
+        injectionSuccessful = true; // Assuming append to body is a success for this flag's purpose
     }
 
     if (injectionSuccessful) {
-        // Call once after successful UI injection to set initial state
         checkAndUpdateHelixUI();
+        // Add the settings panel after the main UI is initialized and injected.
+        addHelixUsageSettingsPanel();
     }
 }
 
 // Initialize the UI when the script loads
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initHelixUsageUI);
+if (typeof jQuery !== 'undefined') {
+    jQuery(async () => {
+        initHelixUsageUI();
+    });
 } else {
-    // DOMContentLoaded has already fired
-    initHelixUsageUI();
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initHelixUsageUI);
+    } else {
+        initHelixUsageUI();
+    }
 }
+
 
 // Listen for settings updates to re-evaluate conditions
 eventSource.on(event_types.SETTINGS_UPDATED, () => {
     console.log("Helix Usage Monitor: SETTINGS_UPDATED event received.");
     checkAndUpdateHelixUI();
+    // Also re-check the settings panel's toggle state in case settings were changed externally somehow
+    const toggle = document.getElementById('helix-usage-hourly-toggle');
+    if (toggle) {
+        const currentSettings = getHelixUsageSettings();
+        if (toggle.checked !== currentSettings.showHourlyBreakdown) {
+            toggle.checked = currentSettings.showHourlyBreakdown;
+            console.log("Helix Monitor: Settings panel toggle updated from SETTINGS_UPDATED event.");
+        }
+    }
 });
 
 // Listen for generation ended event to trigger refresh
