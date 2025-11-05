@@ -257,7 +257,7 @@ async function refreshUsageData() {
             if (messagesUsedText) messagesUsedText.textContent = 'Messages Used: Key Error';
             if (nextMessageTimeText) nextMessageTimeText.textContent = 'Next Message In: Key Error';
             // Display a popup to the user
-            toastr.info('<h3>Helix Usage Monitor Error</h3><p>Could not retrieve the API key for the custom Helix endpoint. Please ensure your API key is correctly configured in SillyTavern for the "Custom" provider and that <code>allowKeysExposure</code> is set to <code>true</code> in your <code>config.yaml</code> file (requires server restart after changing).</p>', 'text');
+            toastr.info('Helix Usage Monitor Error\nCould not retrieve the API key for the custom Helix endpoint. Please ensure your API key is correctly configured in SillyTavern for the "Custom" provider and that `allowKeysExposure` is set to `true` in your `config.yaml` file (requires server restart after changing).', 'text');
             return; 
         }
         console.log('Helix Monitor: API key retrieved successfully via findSecret.');
